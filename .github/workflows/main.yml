@@ -1,0 +1,58 @@
+name: Windows 11 RDP + Tailscale on Codespaces
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  setup-rdp:
+    name: Setup Windows RDP Environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Enable Docker and Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io qemu-system-x86 curl unzip
+
+      - name: Start Windows Container (Dockur Base)
+        run: |
+          docker run -d --name win11 \
+            --privileged \
+            -e VERSION=11 \
+            -e RAM_SIZE=16G \
+            -e CPU_CORES=4 \
+            -p 3389:3389 \
+            --device /dev/kvm \
+            dockurr/windows
+          sleep 60
+          docker logs win11
+
+      - name: Install Tailscale CLI
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Connect to Tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:codespace-rdp
+
+      - name: Display Tailscale IP
+        run: |
+          tailscale status
+          echo "Access this RDP via your Tailscale IP."
+
+      - name: Wait and keep Codespace alive
+        run: |
+          echo "RDP Ready. Access with mstsc at:"
+          tailscale ip -4
+          sleep 3600  # Keeps the runner alive for 1 hour
