@@ -1,4 +1,4 @@
-name: Windows RDP + Tailscale (with TUN Fix)
+name: RDP Windows + Tailscale on Codespace
 
 on:
   workflow_dispatch:
@@ -9,47 +9,54 @@ permissions:
 
 jobs:
   setup-rdp:
-    runs-on: ubuntu-22.04         # stabil, kompatibel dengan Docker & TUN
-    container:
-      image: ubuntu:22.04
-      options: --privileged --cap-add=NET_ADMIN --device=/dev/net/tun
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Install dependencies
         run: |
-          apt-get update
-          apt-get install -y curl iptables sudo
+          sudo apt-get update
+          sudo apt-get install -y docker.io socat qemu-system-x86 curl unzip
 
-      - name: Install Tailscale
+      - name: Start Windows VM (Dockurr/Windows)
+        run: |
+          sudo docker rm -f win11 || true
+          sudo docker run -d --name win11 \
+            --privileged \
+            -e VERSION=11 \
+            -e RAM_SIZE=6G \
+            -e CPU_CORES=4 \
+            -p 127.0.0.1:3389:3389 \
+            dockurr/windows
+          sleep 120 # Tunggu VM RDP benar-benar siap
+
+      - name: Install Tailscale (on host)
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          mkdir -p /run/tailscale
-          nohup tailscaled --state=mem: --socket=/run/tailscale/tailscaled.sock &
+          sudo tailscaled --tun userspace-networking --state=mem: --socket=/var/run/tailscale/tailscaled.sock &
           sleep 3
 
-      - name: Connect Tailscale
+      - name: Authenticate Tailscale (Ephemeral Key)
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          tailscale up --authkey="${TS_AUTHKEY}" --hostname="github-runner" --accept-dns=false
-          tailscale status
+          sudo tailscale up --authkey=${TS_AUTHKEY} --hostname=github-runner-${{ github.run_id }} --ssh
+          sudo tailscale status
 
-      - name: Start Windows container (Dockur)
+      - name: Forward 3389 from Tailscale to Windows container
         run: |
-          apt-get install -y docker.io qemu-system-x86
-          docker run -d --name win11 \
-            --privileged \
-            -e VERSION=11 \
-            -e RAM_SIZE=8G \
-            -e CPU_CORES=4 \
-            -p 3389:3389 \
-            dockurr/windows
-          sleep 60
+          nohup socat TCP-LISTEN:3389,fork TCP:127.0.0.1:3389 &
 
-      - name: Show RDP info
+      - name: Check RDP port listening (Tailscale IP)
         run: |
-          echo "Connect via Tailscale IP below:"
-          tailscale ip -4
+          tailscale_ip=$(sudo tailscale ip -4 | head -n 1)
+          echo "Tailscale runner IP: $tailscale_ip"
+          timeout 15 bash -c \
+            "until nc -z $tailscale_ip 3389; do sleep 2; echo 'Waiting RDP...'; done"
+          echo "RDP at $tailscale_ip:3389 from your Tailscale client is OPEN"
 
       - name: Keep alive for remote access
         run: sleep 3600
