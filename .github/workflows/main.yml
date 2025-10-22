@@ -1,4 +1,4 @@
-name: Windows 11 RDP + Tailscale (Fixed for Ubuntu 24)
+name: Windows RDP + Tailscale (with TUN Fix)
 
 on:
   workflow_dispatch:
@@ -9,53 +9,46 @@ permissions:
 
 jobs:
   setup-rdp:
-    runs-on: ubuntu-22.04   # Ganti 24.04 ke 22.04 agar stabil (hindari konflik)
-    timeout-minutes: 120
+    runs-on: ubuntu-22.04         # stabil, kompatibel dengan Docker & TUN
+    container:
+      image: ubuntu:22.04
+      options: --privileged --cap-add=NET_ADMIN --device=/dev/net/tun
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Prepare environment
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get remove -y containerd containerd.io || true
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 curl unzip apt-transport-https ca-certificates gnupg lsb-release
+          apt-get update
+          apt-get install -y curl iptables sudo
 
-      - name: Install Docker CE cleanly
+      - name: Install Tailscale
         run: |
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker.gpg
-          echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] \
-            https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-            | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y docker-ce docker-ce-cli docker-buildx-plugin docker-compose-plugin
+          curl -fsSL https://tailscale.com/install.sh | sh
+          mkdir -p /run/tailscale
+          nohup tailscaled --state=mem: --socket=/run/tailscale/tailscaled.sock &
+          sleep 3
 
-      - name: Start Windows container
+      - name: Connect Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          sudo docker run -d --name win11 \
+          tailscale up --authkey="${TS_AUTHKEY}" --hostname="github-runner" --accept-dns=false
+          tailscale status
+
+      - name: Start Windows container (Dockur)
+        run: |
+          apt-get install -y docker.io qemu-system-x86
+          docker run -d --name win11 \
             --privileged \
             -e VERSION=11 \
             -e RAM_SIZE=8G \
             -e CPU_CORES=4 \
             -p 3389:3389 \
-            --device /dev/kvm \
             dockurr/windows
           sleep 60
-          sudo docker logs win11
-
-      - name: Install and connect to Tailscale
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:codespace-rdp
 
       - name: Show RDP info
         run: |
-          echo "Connect to this RDP via Tailscale IP:"
+          echo "Connect via Tailscale IP below:"
           tailscale ip -4
 
       - name: Keep alive for remote access
