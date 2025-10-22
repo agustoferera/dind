@@ -1,27 +1,33 @@
-name: RDP Windows + Tailscale on Codespace
+name: RDP Windows + Tailscale Codespace (Fixed Docker)
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
   setup-rdp:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04   # atau 22.04, tapi pastikan fix di atas
     timeout-minutes: 60
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Remove containerd conflicts
         run: |
-          sudo apt-get update
-          sudo apt-get install -y docker.io socat qemu-system-x86 curl unzip
+          sudo apt-get remove -y containerd containerd.io || true
 
-      - name: Start Windows VM (Dockurr/Windows)
+      - name: Install Docker via repo
+        run: |
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list
+          sudo apt-get update
+          sudo apt-get install -y docker-ce docker-ce-cli
+
+      - name: Install other dependencies
+        run: |
+          sudo apt-get install -y socat qemu-system-x86 curl unzip
+
+      - name: Run Windows VM (Dockurr/Windows)
         run: |
           sudo docker rm -f win11 || true
           sudo docker run -d --name win11 \
@@ -31,32 +37,31 @@ jobs:
             -e CPU_CORES=4 \
             -p 127.0.0.1:3389:3389 \
             dockurr/windows
-          sleep 120 # Tunggu VM RDP benar-benar siap
+          sleep 120
 
-      - name: Install Tailscale (on host)
+      - name: Install Tailscale (host)
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscaled --tun userspace-networking --state=mem: --socket=/var/run/tailscale/tailscaled.sock &
           sleep 3
 
-      - name: Authenticate Tailscale (Ephemeral Key)
+      - name: Auth Tailscale (Ephemeral Key)
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           sudo tailscale up --authkey=${TS_AUTHKEY} --hostname=github-runner-${{ github.run_id }} --ssh
           sudo tailscale status
 
-      - name: Forward 3389 from Tailscale to Windows container
+      - name: Forward port 3389
         run: |
           nohup socat TCP-LISTEN:3389,fork TCP:127.0.0.1:3389 &
 
-      - name: Check RDP port listening (Tailscale IP)
+      - name: Check RDP port Tailscale
         run: |
           tailscale_ip=$(sudo tailscale ip -4 | head -n 1)
           echo "Tailscale runner IP: $tailscale_ip"
-          timeout 15 bash -c \
-            "until nc -z $tailscale_ip 3389; do sleep 2; echo 'Waiting RDP...'; done"
-          echo "RDP at $tailscale_ip:3389 from your Tailscale client is OPEN"
+          timeout 15 bash -c "until nc -z $tailscale_ip 3389; do sleep 2; done"
+          echo "RDP at $tailscale_ip:3389 is OPEN"
 
-      - name: Keep alive for remote access
+      - name: Keep alive session
         run: sleep 3600
