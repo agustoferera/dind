@@ -1,3 +1,0 @@
-export REPOSITORY=github
-
-docker compose --file /workspaces/$REPOSITORY/windows/windows.yaml restart
